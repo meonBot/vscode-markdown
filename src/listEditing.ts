@@ -28,8 +28,8 @@ function onEnterKey(modifiers?: IModifier) {
     const editor = window.activeTextEditor!;
     let cursorPos: Position = editor.selection.active;
     let line = editor.document.lineAt(cursorPos.line);
-    let textBeforeCursor = line.text.substr(0, cursorPos.character);
-    let textAfterCursor = line.text.substr(cursorPos.character);
+    let textBeforeCursor = line.text.substring(0, cursorPos.character);
+    let textAfterCursor = line.text.substring(cursorPos.character);
 
     let lineBreakPos = cursorPos;
     if (modifiers == 'ctrl') {
@@ -52,13 +52,22 @@ function onEnterKey(modifiers?: IModifier) {
     }
 
     //// If it's an empty list item, remove it
-    if (/^([-+*]|[0-9]+[.)])( +\[[ x]\])?$/.test(textBeforeCursor.trim()) && textAfterCursor.trim().length == 0) {
-        return editor.edit(editBuilder => {
-            editBuilder.delete(line.range);
-            editBuilder.insert(line.range.end, '\n');
-        }).then(() => {
-            editor.revealRange(editor.selection);
-        }).then(() => fixMarker(editor));
+    if (
+        /^([-+*]|[0-9]+[.)])( +\[[ x]\])?$/.test(textBeforeCursor.trim())  // It is a (task) list item
+        && textAfterCursor.trim().length == 0                              // It is empty
+    ) {
+        if (/^\s+([-+*]|[0-9]+[.)]) +(\[[ x]\] )?$/.test(textBeforeCursor)) {
+            // It is not a top-level list item, outdent it
+            return outdent(editor).then(() => fixMarker(editor));
+        } else if (/^([-+*]|[0-9]+[.)]) $/.test(textBeforeCursor)) {
+            // It is a general list item, delete the list marker
+            return deleteRange(editor, new Range(cursorPos.with({ character: 0 }), cursorPos)).then(() => fixMarker(editor));
+        } else if (/^([-+*]|[0-9]+[.)]) +(\[[ x]\] )$/.test(textBeforeCursor)) {
+            // It is a task list item, delete the checkbox
+            return deleteRange(editor, new Range(cursorPos.with({ character: textBeforeCursor.length - 4 }), cursorPos)).then(() => fixMarker(editor));
+        } else {
+            return asNormal(editor, 'enter', modifiers);
+        }
     }
 
     let matches: RegExpExecArray | null;
@@ -352,21 +361,30 @@ function lookUpwardForMarker(editor: TextEditor, line: number, currentIndentatio
         const prevLineText = editor.document.lineAt(prevLine).text.replace(/\t/g, '    ');
         let matches;
         if ((matches = /^(\s*)(([0-9]+)[.)] +)/.exec(prevLineText)) !== null) {
-            // The previous line has a list marker
-            let prevLeadingSpace: string = matches[1];
-            let prevMarker = matches[3];
+            // The previous line has an ordered list marker
+            const prevLeadingSpace: string = matches[1];
+            const prevMarker = matches[3];
             if (currentIndentation < prevLeadingSpace.length) {
                 // yet to find a sibling item
                 continue;
             } else if (
                 currentIndentation >= prevLeadingSpace.length
-                && currentIndentation < (prevLeadingSpace + prevMarker).length + 1
+                && currentIndentation <= (prevLeadingSpace + prevMarker).length
             ) {
                 // found a sibling item
                 return Number(prevMarker) + 1;
-            } else if (currentIndentation >= (prevLeadingSpace + prevMarker).length + 1) {
+            } else if (currentIndentation > (prevLeadingSpace + prevMarker).length) {
                 // found a parent item
                 return 1;
+            } else {
+                // not possible
+            }
+        } else if ((matches = /^(\s*)([-+*] +)/.exec(prevLineText)) !== null) {
+            // The previous line has an unordered list marker
+            const prevLeadingSpace: string = matches[1];
+            if (currentIndentation >= prevLeadingSpace.length) {
+                // stop finding
+                break;
             }
         } else if ((matches = /^(\s*)\S/.exec(prevLineText)) !== null) {
             // The previous line doesn't have a list marker

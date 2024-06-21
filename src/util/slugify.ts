@@ -1,6 +1,20 @@
 import SlugifyMode from "../contract/SlugifyMode";
 import { configManager } from "../configuration/manager";
 import { commonMarkEngine } from "../markdownEngine";
+import { window } from "vscode";
+
+/**
+ * the wasm equivalent to just doing `import * as zolaSLug from "zola-slug"`, which we can't do because it's a wasm module
+ */
+let zolaSlug: typeof import("zola-slug");
+
+/**
+ * Ideally this function is called before any code that relies on slugify,
+ * and any code that relies on slugify should be called in the `then` block.
+ */
+export async function importZolaSlug() {
+    zolaSlug = await import("zola-slug");
+}
 
 const utf8Encoder = new TextEncoder();
 
@@ -19,7 +33,7 @@ const Regexp_Gitlab_Product_Suffix = /[ \t\r\n\f\v]*\**\((?:core|starter|premium
 /**
  * Converts a string of CommonMark **inline** structures to plain text
  * by removing Markdown syntax in it.
- * This function is only for the `github` and `gitlab` slugify functions.
+ * This function is only for the `github`, `gitlab` and `zola` slugify functions.
  * @see <https://spec.commonmark.org/0.29/#inlines>
  *
  * @param text - The Markdown string.
@@ -55,17 +69,24 @@ const Slugify_Methods: { readonly [mode in SlugifyMode]: (rawContent: string, en
     [SlugifyMode.AzureDevOps]: (slug: string): string => {
         // https://markdown-all-in-one.github.io/docs/specs/slugify/azure-devops.html
         // Encode every character. Although opposed by RFC 3986, it's the only way to solve #802.
-        return Array.from(
-            utf8Encoder.encode(
-                slug
-                    .trim()
-                    .toLowerCase()
-                    .replace(/\p{Zs}/gu, "-")
-            ),
-            (b) => "%" + b.toString(16)
-        )
-            .join("")
-            .toUpperCase();
+
+        slug = slug.trim()
+            .toLowerCase()
+            .replace(/\p{Zs}/gu, "-")
+
+        if (/^\d/.test(slug)) {
+            slug = Array.from(
+                utf8Encoder.encode(slug),
+                (b) => "%" + b.toString(16)
+            )
+                .join("")
+                .toUpperCase();
+        }
+        else {
+            slug = encodeURIComponent(slug)
+        }
+
+        return slug
     },
 
     [SlugifyMode.BitbucketCloud]: (slug: string, env: object): string => {
@@ -136,6 +157,16 @@ const Slugify_Methods: { readonly [mode in SlugifyMode]: (rawContent: string, en
                 .replace(/^\-+/, "") // Remove leading -
                 .replace(/\-+$/, "") // Remove trailing -
         );
+    },
+
+    [SlugifyMode.Zola]: (rawContent: string, env: object): string => {
+        if (zolaSlug !== undefined) {
+            return zolaSlug.slugify(mdInlineToPlainText(rawContent, env));
+        } else {
+            importZolaSlug();
+            window.showErrorMessage("Importing Zola Slug... Please try again.");
+            return rawContent; //unsure if we should throw an error, let it fail or return the original content
+        }
     }
 };
 
@@ -172,6 +203,9 @@ export function slugify(heading: string, {
 
         case SlugifyMode.BitbucketCloud:
             return Slugify_Methods[SlugifyMode.BitbucketCloud](heading, env);
+
+        case SlugifyMode.Zola:
+            return Slugify_Methods[SlugifyMode.Zola](heading, env);
 
         default:
             return Slugify_Methods[SlugifyMode.GitHub](heading, env);
